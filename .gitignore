@@ -18,6 +18,9 @@ Thumbs.db
 # Archives
 *.zip
 
+# GeoJSON parsed cache
+*.cached
+
 # Generated reports & runtime artifacts
 滴水湖气象分析/reports/
 滴水湖气象分析/白山气象分析/charts/
