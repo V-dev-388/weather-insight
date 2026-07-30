@@ -1,0 +1,28 @@
+__pycache__/
+*.pyc
+*.pyo
+.cache/
+*.egg-info/
+.DS_Store
+node_modules/
+
+# IDE
+.idea/
+.vscode/
+*.swp
+*.swo
+
+# OS
+Thumbs.db
+
+# Archives
+*.zip
+
+# Generated reports & runtime artifacts
+滴水湖气象分析/reports/
+滴水湖气象分析/白山气象分析/charts/
+滴水湖气象分析/白山气象分析/figures/
+滴水湖气象分析/白山气象分析/*.json
+滴水湖气象分析/白山气象分析/*.html
+滴水湖气象分析/reports/latest.html
+滴水湖气象分析/reports/latest.md
