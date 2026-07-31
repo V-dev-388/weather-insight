@@ -22,6 +22,7 @@ Thumbs.db
 *.cached
 
 
+
 # Generated reports & runtime artifacts
 滴水湖气象分析/*.svg
 滴水湖气象分析/滴水湖高温成因分析.md
