@@ -22,15 +22,15 @@ agent_created: true
 **核心原则**：数据获取、可视化渲染、分析报告三阶段尽量并行，减少串行等待。
 
 **并行策略**：
-- **地图天气图**：大网格（>20 格点）拆分为 2-4 个批次，用多个 WebFetch 并行获取各批次，最后合并渲染。拆分为 N 批可将数据获取耗时降至 ~1/N。
+- **地图天气图**：大网格（>20 格点）拆分为 2-4 个批次，用多个 curl 命令并行获取各批次（大 payload 下 WebFetch 可能截断，仅作兜底），最后合并渲染。拆分为 N 批可将数据获取耗时降至 ~1/N。
 - **分析报告**：数据获取完成即开始分析，不等待可视化完成。两者共享同一份原始数据。
 - **视觉元素**：show_widget 内图表异步加载（D3/Chart.js CDN 并行），不阻塞其他处理。
 
 **工作流示意**（地图天气图）：
 ```
-WebFetch(批次1) ─┐
-WebFetch(批次2) ─┤→ 合并数据 → show_widget(地图渲染)
-WebFetch(批次N) ─┘
+curl(批次1) ─┐
+curl(批次2) ─┤→ 合并数据 → show_widget(地图渲染)
+curl(批次N) ─┘
                     └→ compute_metrics → 分析报告
 ```
 
@@ -41,11 +41,11 @@ WebFetch(批次N) ─┘
 - **Open-Meteo**（主数据源）：免费、无需 API Key、全球可访问。提供海平面气压、地面气压、2m温度、多高度风、降水、分层云量、天气码，以及 1000-200hPa 共 8 层气压面数据（温度/湿度/风/位势高度）。内置 GFS/ECMWF IFS/CMA GRAPES 等多模型预报。
 - **卫星云图**：风云四号官方平台（引导用户查看真实云图）+ 用 Open-Meteo 云量数据生成云覆盖示意图。
 
-详细 API 参数与备选数据源见 `references/data-sources.md`。
+详细 API 参数与备选数据源见 [references/data-sources.md](references/data-sources.md)。
 
 ## 数据获取工作流
 
-脚本默认智能获取数据：自动尝试多种网络策略直连 Open-Meteo API，成功则直接输出 JSON；若直连失败，则降级为"URL生成 + WebFetch获取 + 解析"三步法。
+脚本默认智能获取数据：自动尝试多种网络策略直连 Open-Meteo API，成功则直接输出 JSON；若直连失败，则降级为 curl 直连或 WebFetch 三步法。
 
 ### 方式一：直接运行脚本（默认，优先尝试）
 
@@ -53,15 +53,29 @@ WebFetch(批次N) ─┘
 python3 scripts/fetch_openmeteo.py --lat <纬度> --lon <经度> [--days <天数>] [--models <模型>] [--summary]
 ```
 
-脚本自动尝试标准请求与绕代理直连。成功时输出完整 JSON（或 `--summary` 摘要）；失败时输出 API URL 并提示用 WebFetch 获取。
+脚本自动尝试标准请求与绕代理直连。成功时输出完整 JSON（或 `--summary` 摘要）；失败时输出 API URL 并提示用 curl 或 WebFetch 获取。
 
-### 方式二：三步法（直连失败时降级）
+### 方式二：curl 直连（脚本直连失败时，或大网格场景优先）
+
+1. 生成 URL：`python3 scripts/fetch_openmeteo.py --lat <纬度> --lon <经度> --url-only`
+2. curl 直连获取完整 JSON：
+   ```bash
+   curl -s --max-time 60 "<API_URL>" -o /tmp/weather_<lat>_<lon>.json
+   ```
+3. 校验完整性后再解析：
+   ```bash
+   python3 scripts/fetch_openmeteo.py --parse /tmp/weather_<lat>_<lon>.json --summary
+   ```
+
+> 大网格（>20 格点）必须用本方式：响应 payload 常超 100KB，WebFetch 中转可能截断 JSON；curl 直连无此问题。多批次并行时，用多个并行 Bash 调用分别执行 curl。
+
+### 方式三：WebFetch 三步法（小 payload 适用）
 
 1. 生成 URL：`python3 scripts/fetch_openmeteo.py --lat <纬度> --lon <经度> --url-only`
 2. 用 WebFetch 工具访问该 URL（prompt：`Return ONLY the raw JSON data exactly as received.`），获取 JSON 后写入临时文件（如 `/tmp/weather_<lat>_<lon>.json`）
 3. 解析：`python3 scripts/fetch_openmeteo.py --parse /tmp/weather_<lat>_<lon>.json --summary`
 
-> 优先尝试方式一，失败才用方式二。WebFetch 工具走独立网络通道，可作为直连的可靠补充。
+> 优先尝试方式一，失败则用方式二。单点或小网格（≤20 点）可用方式三；>20 点优先方式二 curl，WebFetch 仅作 curl 也不可达时的兜底，且获取后必须校验 JSON 完整性。
 
 ## 坐标解析
 
@@ -144,8 +158,8 @@ python3 scripts/fetch_openmeteo.py --lat <纬度> --lon <经度> [--days <天数
    # 国家级 - 2° 间距，48 个格点
    python3 scripts/fetch_openmeteo.py --lat 35 --lon 115 --scope country --url-only
    ```
-3. 对于大网格（>20点），按多 Agent 架构拆分为多个批次并行获取
-4. 并行用多个 WebFetch 调用获取各批次 JSON
+3. 对于大网格（>20点），按多 Agent 架构拆分为多个批次，分别生成各批次 URL
+4. 并行发起多个 `curl -s --max-time 60 "<批次URL>" -o <批次文件>` 获取各批次 JSON，逐个校验完整性（WebFetch 仅作兜底）
 5. 合并数据，提取当前时刻各格点气压、温度、风速、风向
 6. 用 `show_widget` 渲染精细天气图：
    - 底图：D3.js + world-atlas TopoJSON（Natural Earth），Mercator 投影
@@ -162,7 +176,7 @@ python3 scripts/fetch_openmeteo.py --lat <纬度> --lon <经度> [--days <天数
 - 气压低 + 风逆时针旋转 = 气旋/低压系统，天气不稳定
 - 气压高 + 风顺时针旋转 = 反气旋/高压系统，天气晴好
 - 气压梯度大（邻点差>3hPa）= 强风区
-- 参考 `references/analysis-methods.md` 的天气系统识别规则
+- 参考 [references/analysis-methods.md](references/analysis-methods.md) 的天气系统识别规则
 
 ## 模式二：分析报告模式（analyze）
 
@@ -181,7 +195,7 @@ python3 scripts/fetch_openmeteo.py --lat <纬度> --lon <经度> [--days <天数
    - **短期天气趋势推断**：基于气压趋势 + 风场演变 + 稳定性的综合推断
 4. 输出结构化 Markdown 专业报告
 
-**报告结构**（参考 `examples/sample-report.md`）：
+**报告结构**（参考 [examples/sample-report.md](examples/sample-report.md)）：
 
 ```
 # 气象分析报告 — <地点> <时间范围>
@@ -243,7 +257,7 @@ python3 scripts/fetch_openmeteo.py --lat <纬度> --lon <经度> [--days <天数
 - `--input <file>`：从 Open-Meteo JSON 计算气象指标
 - 输出：气压梯度、K指数、Showalter指数、CAPE近似、降水分级、风切变、温度距平、天气系统倾向评分
 
-详细算法与阈值见 `references/analysis-methods.md`。
+详细算法与阈值见 [references/analysis-methods.md](references/analysis-methods.md)。
 
 ### `scripts/render_weather_map.py` — 空间天气图渲染
 
@@ -256,15 +270,16 @@ python3 scripts/fetch_openmeteo.py --lat <纬度> --lon <经度> [--days <天数
 
 ## 资源文件
 
-- `resources/world_countries.geojson`：全球低分辨率地理边界数据，保障任意区域的通用绘制能力
-- `references/data-sources.md`：Open-Meteo API 参数详解、风云四号获取方式、备选数据源
-- `references/analysis-methods.md`：气象分析算法、判断阈值、指标计算方法
-- `references/visualization-guide.md`：各类图表的 SVG 渲染规范与模板
-- `examples/sample-report.md`：分析报告模板示例
+- [resources/world_countries.geojson](resources/world_countries.geojson)：全球低分辨率地理边界数据，保障任意区域的通用绘制能力
+- [references/data-sources.md](references/data-sources.md)：Open-Meteo API 参数详解、风云四号获取方式、备选数据源
+- [references/analysis-methods.md](references/analysis-methods.md)：气象分析算法、判断阈值、指标计算方法
+- [references/visualization-guide.md](references/visualization-guide.md)：各类图表的 SVG 渲染规范与模板
+- [examples/sample-report.md](examples/sample-report.md)：分析报告模板示例
 
 ## 错误处理
 
-- **脚本直连失败**：脚本自动降级输出 URL，改用 WebFetch 工具获取 JSON 再 `--parse` 解析
+- **脚本直连失败**：脚本自动降级输出 URL，改用 curl 直连或 WebFetch 工具获取 JSON 再 `--parse` 解析
+- **大网格 JSON 截断**：>20 格点的响应常超 100KB，WebFetch 可能返回截断数据（`--parse` 报解析错误或格点数与请求不符）。改用 `curl -s --max-time 60 "<URL>" -o <文件>` 直连获取完整 JSON
 - **WebFetch 返回非 JSON**：检查 URL 是否正确，重试，或用简化参数的 URL
 - **卫星云图图片不可达**：用 `--platform-urls` 引导用户查看官方平台，用云量数据生成示意图
 - **坐标解析失败**：用 WebSearch 查询，或提示用户提供经纬度

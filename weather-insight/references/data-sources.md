@@ -8,7 +8,7 @@
 - **API**：`https://api.open-meteo.com/v1/forecast`
 - **费用**：非商业免费，无需 API Key，每日 < 10,000 次调用
 - **覆盖**：全球，内置多模型预报
-- **网络获取**：脚本默认智能直连，失败时降级用 WebFetch 工具通道获取（见 SKILL.md 数据获取工作流）
+- **网络获取**：脚本默认智能直连，失败时降级用 curl 直连或 WebFetch 工具通道获取；大网格 payload 大时用 curl 直连，WebFetch 仅小数据量适用（见 SKILL.md 数据获取工作流）
 
 ### URL 构造
 
@@ -160,7 +160,7 @@ https://api.open-meteo.com/v1/forecast?
 
 ## 四、数据获取注意事项
 
-1. **网络可达性**：脚本默认智能直连，失败时用 WebFetch 工具通道（见 SKILL.md 数据获取工作流）
+1. **网络可达性**：脚本默认智能直连，失败时用 curl 直连或 WebFetch 工具通道；大网格（>20 格点）payload 常超 100KB，优先 curl 直连，WebFetch 仅作兜底（见 SKILL.md 数据获取工作流）
 2. **数据时效**：forecast API 提供未来最多 16 天预报；历史数据用 past_days（最多 92 天）
 3. **时间分辨率**：默认逐小时；部分模型支持 15 分钟
 4. **时区**：`timezone=auto` 自动使用当地时区
