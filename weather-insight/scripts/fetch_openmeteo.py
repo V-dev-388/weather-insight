@@ -252,19 +252,20 @@ def build_grid_url(lat_center, lon_center, rows, cols, step_deg, days=3,
 
 def fetch_auto(lat, lon, days=7, models=None, past_days=0):
     """智能获取数据：依次尝试多种网络策略，返回 (data, method) 或 (None, None)。"""
-    import requests
     params = build_params(lat, lon, days, models, past_days)
 
-    # 第一步：标准 requests 直连
+    # 第一步：标准 requests 直连（requests 为可选依赖，缺失则跳过本步）
     try:
+        import requests
         resp = requests.get(BASE_URL, params=params, timeout=20)
         resp.raise_for_status()
         return resp.json(), "direct"
     except Exception:
         pass
 
-    # 第二步：绕代理直连
+    # 第二步：绕代理直连（requests 为可选依赖，缺失则跳过本步）
     try:
+        import requests
         session = requests.Session()
         session.trust_env = False
         resp = session.get(BASE_URL, params=params, timeout=20)
