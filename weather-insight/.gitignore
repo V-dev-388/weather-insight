@@ -1,0 +1,15 @@
+# Python 运行产物
+__pycache__/
+*.pyc
+*.pyo
+
+# 报告归档与运行时产物（由 scripts/report_store.py 生成，不入版本管理）
+reports/
+
+# 系统/编辑器
+.DS_Store
+.idea/
+.vscode/
+*.swp
+*.swo
+Thumbs.db

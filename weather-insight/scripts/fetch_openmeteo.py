@@ -13,14 +13,94 @@
 === 网格模式（用于地图天气图） ===
     python3 fetch_openmeteo.py --lat 35 --lon 115 --grid 7x5 --grid-step 5 --url-only
     # 在中心(35N,115E)生成 7行×5列 间距5°的网格，输出多坐标合并API URL
+
+=== 响应缓存 ===
+    默认开启：相同参数 1 小时内重复查询直接读 ~/.cache/weather_insight/ 缓存，
+    秒回且不打网络，stderr 提示 [CACHE] hit；--no-cache 绕过读取也不写入；
+    --url-only / --parse 不涉及缓存；缓存异常自动静默降级为直连。
 """
 import argparse
+import hashlib
 import json
+import os
 import subprocess
 import sys
+import time
 import urllib.parse
 
 BASE_URL = "https://api.open-meteo.com/v1/forecast"
+
+# 响应磁盘缓存：相同参数一小时内重复查询直接读缓存，秒回且不打网络。
+# 目录固定在用户缓存区（绝不写入技能目录）；TTL 按缓存文件的 mtime 判定；
+# 缓存任何异常（权限/磁盘满/损坏）一律静默降级为正常直连，不引入新故障点。
+CACHE_DIR = os.path.join(os.path.expanduser("~"), ".cache", "weather_insight")
+CACHE_TTL_SECONDS = 3600
+
+
+def _cache_key(lat, lon, days, past_days, models,
+               scope=None, grid=None, grid_step=None, grid_vars=None):
+    """缓存键 = 规范化参数（lat/lon 四舍五入 4 位）拼接后的 sha1。"""
+    parts = [
+        f"lat={round(lat or 0.0, 4)}",
+        f"lon={round(lon or 0.0, 4)}",
+        f"days={days}",
+        f"past_days={past_days}",
+        f"models={models or ''}",
+        f"scope={scope or ''}",
+        f"grid={grid or ''}",
+        f"grid_step={grid_step}",
+        f"grid_vars={grid_vars or ''}",
+    ]
+    return hashlib.sha1("|".join(parts).encode("utf-8")).hexdigest()
+
+
+def _cache_path(key):
+    return os.path.join(CACHE_DIR, key + ".json")
+
+
+def _cache_load(key):
+    """命中且未过 TTL 返回缓存的响应数据；过期或损坏则静默删除并返回 None。
+
+    任何异常都静默吞掉并返回 None（调用方随即走正常直连），
+    保证缓存永远不会成为新的故障点。
+    """
+    path = _cache_path(key)
+    try:
+        if not os.path.isfile(path):
+            return None
+        if time.time() - os.path.getmtime(path) > CACHE_TTL_SECONDS:
+            os.remove(path)
+            return None
+        with open(path, "r", encoding="utf-8") as f:
+            data = json.load(f)
+        if not isinstance(data, (dict, list)):
+            raise ValueError("缓存内容不是 Open-Meteo 响应结构")
+        return data
+    except Exception:
+        try:
+            if os.path.exists(path):
+                os.remove(path)  # 损坏文件静默清除，本次及下次均重新抓取
+        except Exception:
+            pass
+        return None
+
+
+def _cache_store(key, data):
+    """尽力把响应写入缓存；失败静默忽略。
+
+    临时文件 + os.replace 原子替换，并发读方不会读到半截文件。
+    """
+    try:
+        os.makedirs(CACHE_DIR, exist_ok=True)
+        path = _cache_path(key)
+        tmp = "%s.tmp.%s" % (path, os.getpid())
+        with open(tmp, "w", encoding="utf-8") as f:
+            json.dump(data, f, ensure_ascii=False, indent=2)
+            f.flush()
+            os.fsync(f.fileno())
+        os.replace(tmp, path)
+    except Exception:
+        pass
 
 # 地面层 hourly 变量（单点完整模式）
 SURFACE_VARS = [
@@ -288,6 +368,8 @@ def main():
                         help=f"查询范围（自适应网格密度）: {', '.join(ADAPTIVE_DENSITY.keys())}")
     parser.add_argument("--show-density", action="store_true",
                         help="显示自适应密度配置表")
+    parser.add_argument("--no-cache", action="store_true",
+                        help="绕过响应缓存：不读取也不写入（默认启用 1 小时磁盘缓存）")
     args = parser.parse_args()
 
     # 模式: 显示自适应密度配置
@@ -364,11 +446,24 @@ def main():
         print(build_url(args.lat, args.lon, args.days, args.models, args.past_days))
         return
 
-    # 默认: 智能获取
+    # 默认: 智能获取（带磁盘缓存；--no-cache 或缓存异常时自动直连）
+    ckey = None
+    if not args.no_cache:
+        ckey = _cache_key(args.lat, args.lon, args.days, args.past_days, args.models,
+                          scope=args.scope, grid=args.grid,
+                          grid_step=args.grid_step, grid_vars=args.grid_vars)
+        cached = _cache_load(ckey)
+        if cached is not None:
+            print("[CACHE] hit", file=sys.stderr)
+            output = summarize(cached) if args.summary else cached
+            print(json.dumps(output, ensure_ascii=False, indent=2))
+            return
     print(f"[INFO] 获取 {args.lat},{args.lon} 未来{args.days}天气象数据...", file=sys.stderr)
     data, method = fetch_auto(args.lat, args.lon, args.days, args.models, args.past_days)
     if data is not None:
         print(f"[INFO] 获取成功（{method}）", file=sys.stderr)
+        if ckey is not None:
+            _cache_store(ckey, data)
         output = summarize(data) if args.summary else data
         print(json.dumps(output, ensure_ascii=False, indent=2))
     else:

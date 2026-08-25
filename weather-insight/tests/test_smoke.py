@@ -23,6 +23,8 @@ SCRIPTS = [
     "fetch_satellite.py",
     "render_weather_map.py",
     "run_pipeline.py",
+    "render_dashboard.py",
+    "report_store.py",
 ]
 
 

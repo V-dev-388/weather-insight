@@ -10,7 +10,7 @@ agent_created: true
 
 将公开的气象原始数据（气压、温度、风、降水、云量、多层气压面、卫星云图等非专业人士极难读懂的数据）转化为两种能力：
 
-1. **可视化模式（visualize）**：用 `show_widget` 渲染内联 SVG 图表，把原始数据变成普通人能看懂的图，每张图配通俗解读。
+1. **可视化模式（visualize）**：主输出为运行 `scripts/render_dashboard.py` 生成的**自包含交互式 HTML 面板**——完全离线、双击即开，含总览卡片、四类手写 SVG 图表（气压趋势 / 温度-降水双轴 / 风玫瑰 / 云量堆叠）、可选天气图 tab 与时间滑块联动，把原始数据变成普通人能看懂的图。
 2. **分析报告模式（analyze）**：基于原始数据 + 计算指标，由运行此技能的 LLM 做气象建模级深度分析，输出结构化专业报告。
 
 两种模式共享同一数据获取层，可联动交互。
@@ -24,12 +24,12 @@ agent_created: true
 **并行策略**：
 - **地图天气图**：大网格（>20 格点）拆分为 2-4 个批次，用多个 curl 命令并行获取各批次（大 payload 下 WebFetch 可能截断，仅作兜底），最后合并渲染。拆分为 N 批可将数据获取耗时降至 ~1/N。
 - **分析报告**：数据获取完成即开始分析，不等待可视化完成。两者共享同一份原始数据。
-- **视觉元素**：show_widget 内图表异步加载（D3/Chart.js CDN 并行），不阻塞其他处理。
+- **视觉元素**：交互面板由 `render_dashboard.py` 一次性离线生成（零 CDN 依赖），不占用对话轮次与 token，质量稳定；仅无文件系统平台才退回 show_widget 手绘。
 
 **工作流示意**（地图天气图）：
 ```
 curl(批次1) ─┐
-curl(批次2) ─┤→ 合并数据 → show_widget(地图渲染)
+curl(批次2) ─┤→ 合并数据 → render_dashboard(天气图/面板渲染)
 curl(批次N) ─┘
                     └→ compute_metrics → 分析报告
 ```
@@ -94,8 +94,8 @@ python3 scripts/fetch_openmeteo.py --lat <纬度> --lon <经度> [--days <天数
 **流程**：
 1. 解析用户输入（城市/坐标 + 时间范围，默认当前至未来 7 天）
 2. 按"数据获取工作流"获取 Open-Meteo 数据
-3. 用 `show_widget` 渲染 SVG 图表（先调用 `read_me` 加载 chart/diagram 模块）
-4. 每张图配一段普通人语言解读（不堆术语，讲清"这图说明什么天气"）
+3. 运行 `python3 scripts/render_dashboard.py --input <openmeteo.json> --output <panel.html> [--metrics <metrics.json>] [--title <标题>]` 生成交互式 HTML 面板（图表规范见 [references/visualization-guide.md](references/visualization-guide.md)）
+4. 面板交付后配一段普通人语言解读（不堆术语，讲清"这图说明什么天气"）；无文件系统平台改走 show_widget 后备路线手绘图表并逐图配解读
 
 **图表方案**（按需选择，不必全部渲染）：
 
@@ -117,11 +117,15 @@ python3 scripts/fetch_openmeteo.py --lat <纬度> --lon <经度> [--days <天数
 - 用生活化比喻（"气压像这样下降，通常是有低压系统靠近，天气要转坏"）
 - 标注关键时间点（"下午2点温度最高36°C""晚上8点后降水概率增大"）
 
-**show_widget 规范**：
+### 无文件系统平台的后备路线：show_widget
+
+面板需要把 HTML 落地到文件系统；当运行环境无法写文件或无法打开本地 HTML 时，才退回用平台专属 `show_widget` 现场手绘内联 SVG（先调用 `read_me` 加载 chart/diagram 模块）。规范：
+
 - 浅色主题适配（light theme）：浅色背景 + 深色文字
 - 气压用蓝-红发散色阶；降水用白-蓝渐变；温度用蓝(冷)-红(热)
 - viewBox 从 `0 0 680` 开始
 - 每个形状都显式设置 fill，避免 fallback 到黑色
+- 手写 SVG 模板详见 [references/visualization-guide.md](references/visualization-guide.md) 后备附录
 
 ### 地图天气图模式（空间分布可视化）
 
@@ -161,13 +165,18 @@ python3 scripts/fetch_openmeteo.py --lat <纬度> --lon <经度> [--days <天数
 3. 对于大网格（>20点），按多 Agent 架构拆分为多个批次，分别生成各批次 URL
 4. 并行发起多个 `curl -s --max-time 60 "<批次URL>" -o <批次文件>` 获取各批次 JSON，逐个校验完整性（WebFetch 仅作兜底）
 5. 合并数据，提取当前时刻各格点气压、温度、风速、风向
-6. 用 `show_widget` 渲染精细天气图：
+6. 生成天气图面板（首选）：把合并后的网格数组 JSON 落地，连同任一单点 Open-Meteo JSON 一起交给 render_dashboard：
+   ```bash
+   python3 scripts/render_dashboard.py --input <单点openmeteo.json> --grid <网格数组.json> --output <panel.html>
+   ```
+   面板「天气图」tab：经纬度线性投影画 SVG + 陆地底图（按 bbox 从 resources/world_countries.geojson 裁剪抽稀内联），格点圆点按气压蓝(低)→白→红(高)着色、箭头表示风向风速、带色标图例；拖时间滑块可逐时刻查看
+7. （后备）无文件系统平台用 `show_widget` 手绘精细天气图：
    - 底图：D3.js + world-atlas TopoJSON（Natural Earth），Mercator 投影
    - 格点：圆形标记，填充色=气压（蓝=低→白=中→红=高），标注数值
    - 等压线：在密集格点间连接近似的等压线
    - 风矢量：箭头，方向=风来向，长度∝风速
    - H/L 中心标记：自动识别气压极值点
-7. 配文字解读：高/低压系统位置、风场特征、天气趋势
+8. 配文字解读：高/低压系统位置、风场特征、天气趋势
 
 **手动指定**（覆盖自适应）：`--grid ROWSxCOLS --grid-step DEG`
 **查看密度配置**：`--show-density`
@@ -268,9 +277,28 @@ python3 scripts/fetch_openmeteo.py --lat <纬度> --lon <经度> [--days <天数
 
 根据多点网格自动识别格点尺寸、计算中心，并叠加世界 GeoJSON 边界，在地理底图上进行气压色彩渐变插值、绘制等压线和风场箭头，生成专业的天气图。
 
+### `scripts/render_dashboard.py` — 交互式 HTML 面板生成（可视化主输出）
+
+- `--input <file>`：Open-Meteo 单点预报 JSON 路径（必选）
+- `--output <file>`：输出 HTML 面板路径（必选）
+- `--metrics <file>`：compute_metrics 输出的指标 JSON（提供时启用「指标」tab）
+- `--grid <file>`：网格模式点位数组 JSON，同 render_weather_map 输入格式（提供时启用「天气图」tab）
+- `--analysis <file>`：Markdown 分析报告（提供时启用「分析」tab）
+- `--title <text>`：面板标题文字
+
+产出单文件自包含面板：CSS/JS/SVG 全部内联、原始数据嵌入 `dashboard-data` 标签、零外部链接、完全离线可用。页面为 tab 结构（总览/图表/天气图/指标/分析，可选 tab 缺参数时自动隐藏），支持 tab 切换、折线悬停查值、时间滑块联动总览卡片与天气图时刻；默认停在最接近生成时刻的位置。
+
+### `scripts/run_pipeline.py` — 端到端流水线
+
+- `--lat --lon [--days]`：获取数据并计算指标，stdout 输出结构化摘要 JSON
+- `--scope <范围>`：网格模式（见地图天气图模式）
+- `--output <dir>`：保存原始 JSON 到目录
+- `--no-metrics`：跳过指标计算
+- `--html <path>`：末尾调用 render_dashboard.py 生成交互式面板到指定路径；面板失败只打警告，不中断流水线
+
 ## 资源文件
 
-- [resources/world_countries.geojson](resources/world_countries.geojson)：全球低分辨率地理边界数据，保障任意区域的通用绘制能力
+- [resources/world_countries.geojson](resources/world_countries.geojson)：全球低分辨率地理边界数据，保障任意区域的通用绘制能力；render_dashboard.py 生成天气图时也用它作底图（按 bbox 裁剪+隔点抽稀后内联，不整块嵌入）
 - [references/data-sources.md](references/data-sources.md)：Open-Meteo API 参数详解、风云四号获取方式、备选数据源
 - [references/analysis-methods.md](references/analysis-methods.md)：气象分析算法、判断阈值、指标计算方法
 - [references/visualization-guide.md](references/visualization-guide.md)：各类图表的 SVG 渲染规范与模板

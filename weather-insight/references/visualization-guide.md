@@ -1,4 +1,32 @@
-# 可视化图表渲染规范
+# HTML 面板规范（主输出）
+
+可视化模式的主输出是 `scripts/render_dashboard.py` 生成的**自包含交互式 HTML 面板**：一条命令把 Open-Meteo JSON 变成双击即开、完全离线的单文件页面。本节定义其输出契约；原 show_widget 手写 SVG 规范降为文末后备附录，仅无文件系统平台使用。
+
+## 命令与参数
+
+```bash
+python3 scripts/render_dashboard.py --input <openmeteo.json> --output <panel.html> \
+    [--metrics <metrics.json>] [--grid <grid数组.json>] [--analysis <markdown>] [--title <标题>]
+```
+
+- `--input` / `--output` 必选；其余可选 tab（天气图/指标/分析）在对应参数缺省时整块隐藏，不留空壳。
+- 端到端可用 `run_pipeline.py --html <路径>` 一次跑完；面板生成失败只警告、不中断流水线。
+
+## 输出契约
+
+1. **零外部依赖（硬要求）**：CSS/JS/SVG 全部内联，产物中不得出现任何外部链接字样；断网双击即可打开。
+2. **数据嵌入**：原始数据放 `<script type="application/json" id="dashboard-data">` 标签内，数值不做重舍入（验收会比对数组长度与极值）；`</` 转义防提前闭合脚本标签。
+3. **tab 结构**：总览（天气码+要素卡片+极值表）/ 图表（气压趋势折线、温度-降水双轴、16 方位风玫瑰、低中高云量堆叠面积，全部手写 SVG）/ 天气图（仅 --grid）/ 指标（仅 --metrics）/ 分析（仅 --analysis）。
+4. **交互底线**：tab 切换；折线悬停显示该时刻数值；时间滑块拖动联动总览卡片与天气图时刻，默认停在最接近生成时刻的位置。
+5. **健壮性**：Open-Meteo 数组含 null 时 JS 必须跳过、不得抛错；分层云量缺失时退化为总云量单层。
+6. **天气图底图**：从 resources/world_countries.geojson 按 bbox 裁剪 + 隔点抽稀后内联（目标 <60KB，禁止整块内联 592KB 全量），经纬度线性投影画 SVG，不上 Leaflet/D3。
+7. **配色沿用附录的浅色主题方案**（气压蓝→红发散、温度冷热渐变、降水白蓝等），保证面板与后备路线视觉一致。
+
+---
+
+# 后备附录：show_widget 手写 SVG 渲染规范（无文件系统平台用）
+
+以下规范仅在运行环境无文件系统/无法打开本地 HTML 时，用平台专属 `show_widget` 现场手绘内联 SVG 使用；有文件系统时一律优先走上方 render_dashboard.py 面板路线。
 
 ## 一、show_widget 调用流程
 

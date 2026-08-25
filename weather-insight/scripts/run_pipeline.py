@@ -1,11 +1,12 @@
 #!/usr/bin/env python3
 """run_pipeline.py — 气象数据端到端流水线。
 
-数据获取 → 指标计算 → 结构化 JSON 输出。
+数据获取 → 指标计算 → 结构化 JSON 输出（可选生成交互式 HTML 面板）。
 
 用法:
-    python3 run_pipeline.py --lat 31.2 --lon 121.5 [--days 7] [--output <dir>] [--no-metrics] [--scope <scope>]
+    python3 run_pipeline.py --lat 31.2 --lon 121.5 [--days 7] [--output <dir>] [--no-metrics] [--scope <scope>] [--html <面板路径>]
     python3 run_pipeline.py --lat 31.2 --lon 121.5 --scope city
+    python3 run_pipeline.py --lat 31.2 --lon 121.5 --html /tmp/panel.html
 """
 import argparse
 import json
@@ -17,6 +18,7 @@ import tempfile
 SCRIPT_DIR = os.path.dirname(os.path.abspath(__file__))
 FETCH_SCRIPT = os.path.join(SCRIPT_DIR, "fetch_openmeteo.py")
 METRICS_SCRIPT = os.path.join(SCRIPT_DIR, "compute_metrics.py")
+DASHBOARD_SCRIPT = os.path.join(SCRIPT_DIR, "render_dashboard.py")
 
 
 def run_cmd(cmd, label=""):
@@ -50,6 +52,35 @@ def compute_metrics(data):
         stdout = run_cmd([sys.executable, METRICS_SCRIPT, "--input", tmp_path, "--summary"],
                          label="metrics")
         return json.loads(stdout)
+    finally:
+        os.unlink(tmp_path)
+
+
+def render_dashboard(data, metrics_summary, html_path):
+    """调用 render_dashboard.py 生成交互式 HTML 面板；失败只告警不中断流水线。"""
+    # 写入临时文件供 render_dashboard.py 读取
+    with tempfile.NamedTemporaryFile(mode="w", suffix=".json", delete=False, encoding="utf-8") as f:
+        json.dump(data, f, ensure_ascii=False)
+        tmp_path = f.name
+    try:
+        cmd = [sys.executable, DASHBOARD_SCRIPT,
+               "--input", tmp_path, "--output", html_path,
+               "--title", "气象面板"]
+        if metrics_summary is not None:
+            with tempfile.NamedTemporaryFile(mode="w", suffix=".json", delete=False, encoding="utf-8") as fm:
+                json.dump(metrics_summary, fm, ensure_ascii=False)
+                metrics_tmp = fm.name
+            cmd += ["--metrics", metrics_tmp]
+        else:
+            metrics_tmp = None
+        try:
+            run_cmd(cmd, label="dashboard")
+            print(f"[PIPELINE] 面板已生成: {html_path}", file=sys.stderr)
+        except Exception as e:
+            print(f"[PIPELINE] 警告: 面板生成失败(不影响流水线): {e}", file=sys.stderr)
+        finally:
+            if metrics_tmp:
+                os.unlink(metrics_tmp)
     finally:
         os.unlink(tmp_path)
 
@@ -136,6 +167,8 @@ def main():
     parser.add_argument("--output", type=str, default=None, help="输出目录（保存原始JSON）")
     parser.add_argument("--no-metrics", action="store_true", help="跳过指标计算")
     parser.add_argument("--scope", type=str, default=None, help="查询范围（网格模式）")
+    parser.add_argument("--html", type=str, default=None,
+                        help="生成交互式 HTML 面板到指定路径（失败仅警告，不中断流水线）")
     args = parser.parse_args()
 
     # 1. 获取数据
@@ -183,6 +216,10 @@ def main():
     }
 
     print(json.dumps(output, ensure_ascii=False, indent=2))
+
+    # 5. 生成交互式 HTML 面板（可选，末尾执行；失败只打警告不中断）
+    if args.html:
+        render_dashboard(data, metrics_summary, args.html)
 
 
 if __name__ == "__main__":
